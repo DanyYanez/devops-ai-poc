@@ -2,9 +2,9 @@ name: CI/CD with AI Analysis
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ develop, uat, main ]
   pull_request:
-    branches: [ main ]
+    branches: [ develop, uat, main ]
 
 jobs:
   test-and-analyze:
