@@ -5,7 +5,7 @@ This represents your application code.
 
 def add(a, b):
     """Add two numbers."""
-    return round(a + b)
+    return a + b
 
 def subtract(a, b):
     """Subtract b from a."""

@@ -44,21 +44,63 @@ jobs:
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: analysis-report
+        name: report-${{ github.ref_name }}-${{ github.run_number }}-${{ github.run_id }}
         path: analysis-report.html
     
     - name: Post summary to job
       if: always()
       run: |
-        echo "## 🔍 AI Analysis Report" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
         if [ -f test-results.json ]; then
-          PASSED=$(python -c "import json; d=json.load(open('test-results.json')); print(d.get('summary',{}).get('passed',0))")
-          FAILED=$(python -c "import json; d=json.load(open('test-results.json')); print(d.get('summary',{}).get('failed',0))")
-          echo "| Metric | Count |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| ✅ Passed | $PASSED |" >> $GITHUB_STEP_SUMMARY
-          echo "| ❌ Failed | $FAILED |" >> $GITHUB_STEP_SUMMARY
+          python << 'EOF'
+        import json
+
+        with open('test-results.json', 'r') as f:
+            data = json.load(f)
+
+        summary = data.get('summary', {})
+        passed = summary.get('passed', 0)
+        failed = summary.get('failed', 0)
+        total = summary.get('total', 0)
+
+        status_icon = "✅" if failed == 0 else "❌"
+        status_text = "PASSED" if failed == 0 else "FAILED"
+
+        md = f"""## {status_icon} CI/CD Analysis Report - {status_text}
+
+| Metric | Count |
+|--------|-------|
+| 📊 Total Tests | {total} |
+| ✅ Passed | {passed} |
+| ❌ Failed | {failed} |
+
+"""
+
+        if failed > 0:
+            md += "### ❌ Failed Tests\n\n"
+            for test in data.get('tests', []):
+                if test.get('outcome') == 'failed':
+                    test_name = test.get('nodeid', 'Unknown')
+                    # Extract just the test name for readability
+                    short_name = test_name.split('::')[-1] if '::' in test_name else test_name
+                    file_path = test_name.split('::')[0] if '::' in test_name else ''
+                    
+                    md += f"- **{short_name}**\n"
+                    md += f"  - 📁 File: `{file_path}`\n"
+                    
+                    # Get error message
+                    call_info = test.get('call', {})
+                    crash = call_info.get('crash', {})
+                    if crash:
+                        message = crash.get('message', '')[:200]
+                        if message:
+                            md += f"  - 💬 Error: `{message}`\n"
+                    md += "\n"
+
+        md += "\n---\n📎 View full HTML report in Artifacts section"
+
+        with open('$GITHUB_STEP_SUMMARY', 'a') as f:
+            f.write(md)
+        EOF
         fi
     
     - name: Comment on commit if tests fail
@@ -70,12 +112,36 @@ jobs:
           if (fs.existsSync('test-results.json')) {
             const results = JSON.parse(fs.readFileSync('test-results.json', 'utf8'));
             const failed = results.summary?.failed || 0;
+            const passed = results.summary?.passed || 0;
+            const total = results.summary?.total || 0;
+            
             if (failed > 0) {
+              let failedTests = '';
+              for (const test of results.tests || []) {
+                if (test.outcome === 'failed') {
+                  const testName = test.nodeid?.split('::').pop() || 'Unknown';
+                  const filePath = test.nodeid?.split('::')[0] || '';
+                  const errorMsg = test.call?.crash?.message?.substring(0, 150) || 'No details';
+                  failedTests += `- **${testName}**\n  - File: \`${filePath}\`\n  - Error: \`${errorMsg}\`\n`;
+                }
+              }
+              
               await github.rest.repos.createCommitComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 commit_sha: context.sha,
-                body: `## ❌ CI Failed: ${failed} test(s) failed\n\nView the [AI Analysis Report](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) for details.`
+                body: `## ❌ CI Failed
+
+| Metric | Count |
+|--------|-------|
+| Total | ${total} |
+| ✅ Passed | ${passed} |
+| ❌ Failed | ${failed} |
+
+### Failed Tests:
+${failedTests}
+
+🔗 [View AI Analysis Report](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
               });
             }
           }
