@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import xml.etree.ElementTree as ET
 
 def main():
     if not os.path.exists('test-results.json'):
@@ -15,7 +16,20 @@ def main():
     failed = summary.get('failed', 0)
     total = summary.get('total', 0)
     
-    status = "✅ PASSED" if failed == 0 else "❌ FAILED"
+    # Check coverage
+    coverage = 0
+    coverage_failed = False
+    if os.path.exists('coverage.xml'):
+        tree = ET.parse('coverage.xml')
+        coverage = float(tree.getroot().get('line-rate', 0)) * 100
+        if coverage < 70:
+            coverage_failed = True
+    
+    # Determine overall status
+    if failed > 0 or coverage_failed:
+        status = "❌ FAILED"
+    else:
+        status = "✅ PASSED"
     
     print(f"## {status} • Pipeline Analysis Report\n")
     print("| Metric | Count |")
@@ -23,7 +37,14 @@ def main():
     print(f"| 📊 Total Tests | {total} |")
     print(f"| ✅ Passed | {passed} |")
     print(f"| ❌ Failed | {failed} |")
+    print(f"| 📈 Coverage | {coverage:.1f}% |")
     print()
+    
+    if coverage_failed:
+        print(f"### ⚠️ Coverage Below Threshold\n")
+        print(f"• Current: **{coverage:.1f}%**")
+        print(f"• Required: **70%**")
+        print()
     
     if failed > 0:
         print("### ❌ Failed Tests\n")
