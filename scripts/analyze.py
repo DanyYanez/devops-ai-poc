@@ -54,6 +54,28 @@ def get_changed_files():
         return []
 
 
+def get_git_info():
+    """Get branch and author info."""
+    try:
+        branch_result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True
+        )
+        branch = branch_result.stdout.strip() if branch_result.returncode == 0 else "unknown"
+        
+        author_result = subprocess.run(
+            ["git", "log", "-1", "--pretty=format:%an"],
+            capture_output=True,
+            text=True
+        )
+        author = author_result.stdout.strip() if author_result.returncode == 0 else "unknown"
+        
+        return branch, author
+    except:
+        return "unknown", "unknown"
+
+
 def read_test_results():
     """Read pytest results from JSON file."""
     results_file = "test-results.json"
@@ -129,12 +151,16 @@ Changed files list: {', '.join(changed_files) if changed_files else 'None detect
 
 ---
 
-Please provide:
-1. **Summary** (2-3 sentences): What changed and overall test status
-2. **Risk Assessment** (Low/Medium/High): Based on what files changed and test results
-3. **Failed Tests Analysis** (if any): Why they might have failed, correlation with changes
-4. **Regression Check**: Are failures in new tests or existing (regression) tests?
-5. **Recommendation**: Clear next action for the developer
+Please provide your analysis in the following JSON format (respond ONLY with valid JSON, no markdown):
+{{
+    "summary": "2-3 sentence summary of what changed and overall test status",
+    "risk_level": "LOW|MEDIUM|HIGH",
+    "risk_reasons": ["reason 1", "reason 2"],
+    "failed_tests_analysis": "Analysis of why tests failed and correlation with changes (or 'No failures detected' if all passed)",
+    "regression_check": "Whether failures are in new tests or existing regression tests",
+    "recommendations": ["recommendation 1", "recommendation 2"],
+    "quick_fixes": ["file: fix description", "file: fix description"]
+}}
 
 Keep it concise and actionable. No fluff."""
 
@@ -147,7 +173,30 @@ Keep it concise and actionable. No fluff."""
     return response.content[0].text
 
 
-def generate_html_report(analysis, test_results, commit_msg):
+def parse_llm_response(response_text):
+    """Parse JSON response from LLM."""
+    try:
+        # Try to extract JSON from response
+        text = response_text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        return json.loads(text)
+    except:
+        # Return default structure if parsing fails
+        return {
+            "summary": response_text[:500],
+            "risk_level": "MEDIUM",
+            "risk_reasons": ["Unable to parse detailed analysis"],
+            "failed_tests_analysis": "See raw output",
+            "regression_check": "Manual review required",
+            "recommendations": ["Review test output manually"],
+            "quick_fixes": []
+        }
+
+
+def generate_html_report(analysis_data, test_results, commit_msg, branch, author):
     """Generate HTML report for Jenkins/GitHub Actions."""
     
     if test_results:
@@ -162,11 +211,71 @@ def generate_html_report(analysis, test_results, commit_msg):
         status_color = "#f59e0b"
         status_text = "UNKNOWN"
     
+    # Risk level colors
+    risk_level = analysis_data.get("risk_level", "MEDIUM")
+    risk_colors = {
+        "LOW": "#22c55e",
+        "MEDIUM": "#f59e0b", 
+        "HIGH": "#ef4444"
+    }
+    risk_color = risk_colors.get(risk_level, "#f59e0b")
+    
+    # Build failed tests HTML
+    failed_tests_html = ""
+    if test_results and failed > 0:
+        failed_tests_html = "<ul class='failed-list'>"
+        for test in test_results.get("tests", []):
+            if test.get("outcome") == "failed":
+                nodeid = test.get("nodeid", "Unknown")
+                parts = nodeid.split("::")
+                test_name = parts[-1] if len(parts) > 1 else nodeid
+                file_path = parts[0] if len(parts) > 1 else ""
+                error_msg = test.get("call", {}).get("crash", {}).get("message", "")[:150]
+                
+                failed_tests_html += f"""
+                <li>
+                    <strong>{test_name}</strong>
+                    <div class="test-detail">📁 {file_path}</div>
+                    <div class="test-detail">💬 {error_msg}</div>
+                </li>
+                """
+        failed_tests_html += "</ul>"
+    else:
+        failed_tests_html = "<p class='success-text'>✓ All tests passed successfully</p>"
+    
+    # Build risk reasons HTML
+    risk_reasons_html = "<ul class='bullet-list'>"
+    for reason in analysis_data.get("risk_reasons", []):
+        risk_reasons_html += f"<li>{reason}</li>"
+    risk_reasons_html += "</ul>"
+    
+    # Build recommendations HTML
+    recommendations_html = "<ul class='bullet-list'>"
+    for rec in analysis_data.get("recommendations", []):
+        recommendations_html += f"<li>{rec}</li>"
+    recommendations_html += "</ul>"
+    
+    # Build quick fixes HTML
+    quick_fixes = analysis_data.get("quick_fixes", [])
+    quick_fixes_html = ""
+    if quick_fixes:
+        quick_fixes_html = "<ul class='bullet-list'>"
+        for fix in quick_fixes:
+            quick_fixes_html += f"<li><code>{fix}</code></li>"
+        quick_fixes_html += "</ul>"
+    else:
+        quick_fixes_html = "<p class='muted'>No quick fixes suggested</p>"
+    
     html = f"""<!DOCTYPE html>
 <html>
 <head>
-    <title>CI/CD Analysis Report</title>
+    <title>Pipeline Analysis Report</title>
     <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background: #0f172a;
@@ -178,24 +287,44 @@ def generate_html_report(analysis, test_results, commit_msg):
             max-width: 900px;
             margin: 0 auto;
         }}
-        h1 {{
+        .header {{
+            margin-bottom: 32px;
+        }}
+        .header h1 {{
             color: #f8fafc;
-            border-bottom: 2px solid #334155;
-            padding-bottom: 16px;
+            font-size: 1.75rem;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }}
+        .header-meta {{
+            color: #94a3b8;
+            font-size: 0.9rem;
+            margin-top: 8px;
         }}
         .status-badge {{
             display: inline-block;
             background: {status_color};
             color: white;
-            padding: 8px 20px;
+            padding: 6px 16px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            margin: 16px 0;
+        }}
+        .commit-box {{
+            background: #334155;
+            padding: 12px 16px;
             border-radius: 6px;
-            font-weight: bold;
-            font-size: 14px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            margin-bottom: 24px;
+            border-left: 4px solid {status_color};
         }}
         .metrics {{
             display: flex;
-            gap: 20px;
-            margin: 24px 0;
+            gap: 16px;
+            margin-bottom: 32px;
         }}
         .metric {{
             background: #1e293b;
@@ -205,74 +334,170 @@ def generate_html_report(analysis, test_results, commit_msg):
             flex: 1;
         }}
         .metric-value {{
-            font-size: 32px;
-            font-weight: bold;
-            color: #38bdf8;
+            font-size: 2rem;
+            font-weight: 700;
         }}
+        .metric-value.green {{ color: #22c55e; }}
+        .metric-value.red {{ color: #ef4444; }}
+        .metric-value.blue {{ color: #38bdf8; }}
         .metric-label {{
             color: #94a3b8;
-            font-size: 14px;
+            font-size: 0.85rem;
+            margin-top: 4px;
         }}
-        .analysis {{
+        .section {{
             background: #1e293b;
             padding: 24px;
             border-radius: 8px;
-            margin-top: 24px;
+            margin-bottom: 20px;
         }}
-        .analysis h2 {{
+        .section h2 {{
+            color: #f8fafc;
+            font-size: 1.1rem;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .section p {{
+            color: #cbd5e1;
+            font-size: 0.95rem;
+        }}
+        .risk-badge {{
+            display: inline-block;
+            background: {risk_color};
+            color: white;
+            padding: 4px 12px;
+            border-radius: 4px;
+            font-weight: 600;
+            font-size: 0.8rem;
+            margin-left: 8px;
+        }}
+        .bullet-list {{
+            list-style: none;
+            padding: 0;
+            margin: 12px 0 0 0;
+        }}
+        .bullet-list li {{
+            position: relative;
+            padding-left: 20px;
+            margin-bottom: 10px;
+            color: #cbd5e1;
+            font-size: 0.95rem;
+        }}
+        .bullet-list li::before {{
+            content: "•";
+            position: absolute;
+            left: 0;
             color: #38bdf8;
-            margin-top: 0;
+            font-weight: bold;
         }}
-        .analysis-content {{
-            white-space: pre-wrap;
+        .failed-list {{
+            list-style: none;
+            padding: 0;
+            margin: 12px 0 0 0;
         }}
-        .commit {{
+        .failed-list li {{
             background: #334155;
             padding: 12px 16px;
             border-radius: 6px;
-            margin: 16px 0;
+            margin-bottom: 12px;
+            border-left: 4px solid #ef4444;
+        }}
+        .failed-list li strong {{
+            color: #f8fafc;
+            font-size: 0.95rem;
+        }}
+        .test-detail {{
+            color: #94a3b8;
+            font-size: 0.85rem;
+            margin-top: 6px;
+            padding-left: 8px;
+        }}
+        .success-text {{
+            color: #22c55e;
+            font-size: 0.95rem;
+        }}
+        .muted {{
+            color: #64748b;
+            font-size: 0.9rem;
+            font-style: italic;
+        }}
+        code {{
+            background: #334155;
+            padding: 2px 6px;
+            border-radius: 4px;
             font-family: monospace;
-            font-size: 14px;
+            font-size: 0.85rem;
         }}
         .footer {{
             margin-top: 32px;
             padding-top: 16px;
             border-top: 1px solid #334155;
             color: #64748b;
-            font-size: 12px;
+            font-size: 0.8rem;
+            text-align: center;
         }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🔍 CI/CD Analysis Report</h1>
+        <div class="header">
+            <h1>📊 Pipeline Analysis Report</h1>
+            <div class="header-meta">Branch: <strong>{branch}</strong> • Author: <strong>{author}</strong></div>
+        </div>
         
         <span class="status-badge">{status_text}</span>
         
-        <div class="commit">📝 {commit_msg[:100] if commit_msg else 'No commit message'}</div>
+        <div class="commit-box">📝 {commit_msg[:100] if commit_msg else 'No commit message'}</div>
         
         <div class="metrics">
             <div class="metric">
-                <div class="metric-value">{total}</div>
+                <div class="metric-value blue">{total}</div>
                 <div class="metric-label">Total Tests</div>
             </div>
             <div class="metric">
-                <div class="metric-value" style="color: #22c55e">{passed}</div>
+                <div class="metric-value green">{passed}</div>
                 <div class="metric-label">Passed</div>
             </div>
             <div class="metric">
-                <div class="metric-value" style="color: {'#ef4444' if failed > 0 else '#22c55e'}">{failed}</div>
+                <div class="metric-value {'red' if failed > 0 else 'green'}">{failed}</div>
                 <div class="metric-label">Failed</div>
             </div>
         </div>
         
-        <div class="analysis">
-            <h2>🤖 AI Analysis</h2>
-            <div class="analysis-content">{analysis}</div>
+        <div class="section">
+            <h2>📋 Summary</h2>
+            <p>{analysis_data.get('summary', 'No summary available')}</p>
+        </div>
+        
+        <div class="section">
+            <h2>⚠️ Risk Assessment <span class="risk-badge">{risk_level}</span></h2>
+            {risk_reasons_html}
+        </div>
+        
+        <div class="section">
+            <h2>❌ Failed Tests</h2>
+            {failed_tests_html}
+        </div>
+        
+        <div class="section">
+            <h2>🔄 Regression Analysis</h2>
+            <p>{analysis_data.get('regression_check', 'No regression analysis available')}</p>
+        </div>
+        
+        <div class="section">
+            <h2>💡 Recommendations</h2>
+            {recommendations_html}
+        </div>
+        
+        <div class="section">
+            <h2>🔧 Quick Fixes</h2>
+            {quick_fixes_html}
         </div>
         
         <div class="footer">
-            Generated at {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} | 
+            Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S UTC')} • 
             Model: Claude Haiku (simulating local Qwen/LLaMA 7B)
         </div>
     </div>
@@ -297,14 +522,17 @@ def main():
     changed_files = get_changed_files()
     test_results = read_test_results()
     test_output = read_test_output()
+    branch, author = get_git_info()
     
+    print(f"  - Branch: {branch}")
+    print(f"  - Author: {author}")
     print(f"  - Commit: {commit_msg[:50]}...")
     print(f"  - Changed files: {len(changed_files)}")
     print(f"  - Test results: {'Found' if test_results else 'Not found'}")
     
     # Analyze with LLM
     print("\n🤖 Analyzing with LLM...")
-    analysis = analyze_with_llm(
+    raw_analysis = analyze_with_llm(
         test_results, 
         test_output, 
         diff_stat, 
@@ -312,15 +540,20 @@ def main():
         changed_files
     )
     
+    # Parse response
+    analysis_data = parse_llm_response(raw_analysis)
+    
     # Output
     print("\n" + "=" * 60)
     print("📋 ANALYSIS RESULTS")
     print("=" * 60)
-    print(analysis)
+    print(f"\nSummary: {analysis_data.get('summary', 'N/A')}")
+    print(f"\nRisk Level: {analysis_data.get('risk_level', 'N/A')}")
+    print(f"\nRegression: {analysis_data.get('regression_check', 'N/A')}")
     print("=" * 60)
     
     # Generate HTML report
-    generate_html_report(analysis, test_results, commit_msg)
+    generate_html_report(analysis_data, test_results, commit_msg, branch, author)
     
     # Exit with appropriate code
     if test_results:

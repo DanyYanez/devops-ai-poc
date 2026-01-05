@@ -17,7 +17,7 @@ def main():
     
     status = "✅ PASSED" if failed == 0 else "❌ FAILED"
     
-    print(f"## {status} - CI/CD Analysis Report\n")
+    print(f"## {status} • Pipeline Analysis Report\n")
     print("| Metric | Count |")
     print("|--------|-------|")
     print(f"| 📊 Total Tests | {total} |")
@@ -34,14 +34,14 @@ def main():
                 test_name = parts[-1] if len(parts) > 1 else nodeid
                 file_path = parts[0] if len(parts) > 1 else ''
                 
-                print(f"- **{test_name}**")
-                print(f"  - 📁 `{file_path}`")
+                print(f"• **{test_name}**")
+                print(f"  • 📁 `{file_path}`")
                 
                 crash = test.get('call', {}).get('crash', {})
                 if crash:
                     msg = crash.get('message', '')[:150]
                     if msg:
-                        print(f"  - 💬 `{msg}`")
+                        print(f"  • 💬 `{msg}`")
                 print()
     
     print("---")

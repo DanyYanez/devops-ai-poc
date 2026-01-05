@@ -40,17 +40,23 @@ jobs:
       run: python scripts/analyze.py
       continue-on-error: true
     
+    - name: Rename report
+      if: always()
+      run: |
+        if [ -f analysis-report.html ]; then
+          mv analysis-report.html "report-${{ github.ref_name }}-${{ github.actor }}-run${{ github.run_number }}.html"
+        fi
+    
     - name: Upload Analysis Report
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: report-${{ github.ref_name }}-run${{ github.run_number }}
-        path: analysis-report.html
+        name: report-${{ github.ref_name }}-${{ github.actor }}-run${{ github.run_number }}
+        path: "report-${{ github.ref_name }}-${{ github.actor }}-run${{ github.run_number }}.html"
     
     - name: Generate summary
       if: always()
-      run: |
-        python scripts/generate_summary.py >> $GITHUB_STEP_SUMMARY
+      run: python scripts/generate_summary.py >> $GITHUB_STEP_SUMMARY
     
     - name: Comment on commit if tests fail
       if: always()
@@ -72,7 +78,7 @@ jobs:
             if (test.outcome === 'failed') {
               const name = test.nodeid?.split('::').pop() || 'Unknown';
               const file = test.nodeid?.split('::')[0] || '';
-              failedTests += `- **${name}** (${file})\n`;
+              failedTests += `• **${name}** (${file})\n`;
             }
           }
           
@@ -80,7 +86,7 @@ jobs:
             owner: context.repo.owner,
             repo: context.repo.repo,
             commit_sha: context.sha,
-            body: `## ❌ CI Failed\n\n| Metric | Count |\n|--------|-------|\n| Total | ${total} |\n| ✅ Passed | ${passed} |\n| ❌ Failed | ${failed} |\n\n### Failed Tests:\n${failedTests}\n\n🔗 [View AI Analysis](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
+            body: `## ❌ Pipeline Failed\n\n| Metric | Count |\n|--------|-------|\n| Total | ${total} |\n| ✅ Passed | ${passed} |\n| ❌ Failed | ${failed} |\n\n### Failed Tests:\n${failedTests}\n\n🔗 [View Full Report](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
           });
     
     - name: Fail if tests failed
